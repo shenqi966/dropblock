@@ -1,0 +1,7 @@
+.idea/
+*.pyc
+examples/data/
+*.pth
+*events.*
+*.so
+_lib
