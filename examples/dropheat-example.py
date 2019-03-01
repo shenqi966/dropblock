@@ -41,15 +41,16 @@ class ResNetCustom(ResNet):
             nr_steps=5e3
         )
         self._dropheat_sche = LinearScheduler(
-            DropHeat2D(drop_prob=drop_prob, block_size=block_size),
+            DropHeat2D(drop_prob=drop_prob, block_size=block_size, power=2.0),
             start_value=0.,
             stop_value=drop_prob,
             nr_steps=5e3
         )
         self._dropheat = DropHeat2D(drop_prob=drop_prob, block_size=block_size)
+
         self.dropheat = self._dropheat_sche
         self.dropheat2 = LinearScheduler(
-            DropHeat2D(drop_prob=drop_prob, block_size=block_size),
+            DropHeat2D(drop_prob=drop_prob, block_size=block_size, power=2.0),
             start_value=0.,
             stop_value=drop_prob,
             nr_steps=5e3
@@ -79,7 +80,7 @@ class ResNetCustom(ResNet):
         x = self.maxpool(x)
         # print(x.size()) # 8 8
 
-        x = self.dropblock(self.layer1(x))
+        x = self.dropheat(self.layer1(x))
         # print(x.size()) # 8 8
         x = self.dropheat2(self.layer2(x))
         # print(x.size()) # 4 4
@@ -248,7 +249,7 @@ if __name__ == '__main__':
                         help='number of epochs')
     parser.add_argument('--lr', required=False, type=float, default=0.001,
                         help='learning rate')
-    parser.add_argument('--drop_prob', required=False, type=float, default=0.25,
+    parser.add_argument('--drop_prob', required=False, type=float, default=0.05,
                         help='dropblock dropout probability')
     parser.add_argument('--block_size', required=False, type=int, default=5,
                         help='dropblock block size')
@@ -303,6 +304,11 @@ if __name__ == '__main__':
     filedir = options.tag
     if not os.path.exists(filedir):
         os.makedirs(filedir)
+
+    from tensorboardX import SummaryWriter
+    writer = SummaryWriter(
+        log_dir=os.path.join(filedir, "{}_bs{}_dp{}_epoch{}".format(model_name, bsize, drop_prob, epochs)))
+
     filename = os.path.join(filedir, "{}_bs{}_dp{}_epoch{}.pth".format(model_name, bsize, drop_prob, epochs))
 
 
@@ -357,6 +363,8 @@ if __name__ == '__main__':
             t1 = time.time()
             print("\r[EPOCH {0:d}] \tloss: {1:6.4f}, \tacc: {2:6.4f} \tdrop_prob:{3} \ttime:{4:2.4f}".format(epoch, train_loss / (batch_idx+1), correct_percent, drop_prob, (t1-t0)/(batch_idx+1)), end="\r")
         print("")
+        writer.add_scalar("train/loss", train_loss / (batch_idx+1), epoch)
+        writer.add_scalar("train/acc", correct_percent, epoch)
 
         model.eval()
         correct_test = 0
@@ -375,6 +383,8 @@ if __name__ == '__main__':
         if correct_percent > best_acc:
             best_acc = correct_percent
         print("TEST acc: {0:6.4f},   BEST acc: {1:6.4f}".format(correct_percent, best_acc))
+        writer.add_scalar("test/acc", correct_percent, epoch)
+        writer.add_scalar("test/best_acc", best_acc, epoch)
 
     print(model.dropheat.dropblock.save_bm)
     print(model.dropheat2.dropblock.save_bm)

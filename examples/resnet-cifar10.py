@@ -138,11 +138,15 @@ class ResNetAlign(ResNet):
         x = self.dropblock(self.layer1(x)); # print(x.size()) 8 8
         x = self.dropblock(self.layer2(x)); # print(x.size()) 4 4
 
-        init_param = 0.05
+        x = self.layer3(x);  # print(x.size())  # 2 2
+
+        init_param = 0.1
         if self.align_sche:
-            vlist = np.linspace(1,3,5000)
+            vlist = np.linspace(1,2,5000)
             if self.i < len(vlist):
                 param = vlist[self.i] * init_param
+            else:
+                param = vlist[self.i-1] * init_param
         else: param = init_param
 
         if self.training == True:
@@ -171,7 +175,7 @@ class ResNetAlign(ResNet):
             pass
             # print("\r........                                     ....................................TEST No Align ", end="\r")
 
-        x = self.layer3(x);  # print(x.size())  # 2 2
+
         x = self.layer4(x)
 
         x = self.avgpool(x)
@@ -213,7 +217,7 @@ if __name__ == '__main__':
                         help='number of epochs')
     parser.add_argument('--lr', required=False, type=float, default=0.001,
                         help='learning rate')
-    parser.add_argument('--drop_prob', required=False, type=float, default=0.25,
+    parser.add_argument('--drop_prob', required=False, type=float, default=0.,
                         help='dropblock dropout probability')
     parser.add_argument('--block_size', required=False, type=int, default=5,
                         help='dropblock block size')

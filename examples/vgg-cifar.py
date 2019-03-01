@@ -132,6 +132,28 @@ class ResNetAlign(ResNet):
 def resnet9Align(**kwargs):
     return ResNetAlign(BasicBlock, [1, 1, 1, 1], **kwargs)
 
+# def adjust_learning_rate(optimizer, epoch):
+#     """decrease the learning rate at 100 and 150 epoch"""
+#     lr = 0.1
+#     if epoch <= 9 and lr > 0.1:
+#         # warm-up training for large minibatch
+#         lr = 0.1 + (0.2 - 0.1) * epoch / 10.
+#     if epoch >= 80:
+#         lr /= 10
+#     if epoch >= 130:
+#         lr /= 10
+#     print("Learning rate = ", lr)
+#     for param_group in optimizer.param_groups:
+#         param_group['lr'] = lr
+def adjust_learning_rate(optimizer, epoch):
+    lr = 0.1
+    if epoch >= 100:
+        lr /= 10
+    if epoch >= 150:
+        lr /= 10
+    # print("Learning rate = ", lr)
+    for param_group in optimizer.param_groups:
+        param_group['lr'] = lr
 
 if __name__ == '__main__':
     parser = configargparse.ArgumentParser()
@@ -142,11 +164,11 @@ if __name__ == '__main__':
                         help='data root path')
     parser.add_argument('--workers', required=False, type=int, default=4,
                         help='number of workers for data loader')
-    parser.add_argument('--bsize', required=False, type=int, default=256,
+    parser.add_argument('--bsize', required=False, type=int, default=128,  # 与前面的保持一致
                         help='batch size')
-    parser.add_argument('--epochs', required=False, type=int, default=300,
+    parser.add_argument('--epochs', required=False, type=int, default=250,
                         help='number of epochs')
-    parser.add_argument('--lr', required=False, type=float, default=0.001,
+    parser.add_argument('--lr', required=False, type=float, default=0.1,
                         help='learning rate')
     parser.add_argument('--drop_prob', required=False, type=float, default=0.25,
                         help='dropblock dropout probability')
@@ -154,7 +176,9 @@ if __name__ == '__main__':
                         help='dropblock block size')
     parser.add_argument('--device', required=False, default=0, type=int,
                         help='CUDA device id for GPU training')
-    parser.add_argument('--tag', required=False, type=str, default='default',
+    parser.add_argument('--tag', required=False, type=str, default='vgg-default-16',
+                        help='saving floder')
+    parser.add_argument('--verbose', required=False, type=bool, default=False,
                         help='saving floder')
     options = parser.parse_args()
     print("Options: ")
@@ -167,24 +191,31 @@ if __name__ == '__main__':
     lr = options.lr
     drop_prob = options.drop_prob
     block_size = options.block_size
+    verbose = options.verbose
     device = 'cpu' if options.device is None \
         else torch.device('cuda:{}'.format(options.device))
 
-    transform = transforms.Compose([
-        transforms.RandomHorizontalFlip(),
+    # 标准化
+    transform_train = transforms.Compose([
         transforms.RandomCrop(32, padding=4),
+        transforms.RandomHorizontalFlip(),
         transforms.ToTensor(),
-        transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+        transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+    ])
+
+    transform_test = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
     ])
 
     train_set = torchvision.datasets.CIFAR10(root=root, train=True,
-                                             download=True, transform=transform)
+                                             download=True, transform=transform_train)
 
     train_loader = torch.utils.data.DataLoader(train_set, batch_size=bsize,
                                                shuffle=True, num_workers=workers)
 
     test_set = torchvision.datasets.CIFAR10(root=root, train=False,
-                                            download=True, transform=transform)
+                                            download=True, transform=transform_test)
 
     test_loader = torch.utils.data.DataLoader(test_set, batch_size=bsize,
                                               shuffle=False, num_workers=workers)
@@ -198,7 +229,8 @@ if __name__ == '__main__':
 
     # define loss and optimizer
     criterion = nn.CrossEntropyLoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    # optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.1, momentum=0.9, weight_decay=0.0005) # default SGD optim
 
     filedir = options.tag
     if not os.path.exists(filedir):
@@ -215,6 +247,7 @@ if __name__ == '__main__':
         total = 0
         model.train()
         t0 = time.time()
+        adjust_learning_rate(optimizer, epoch)
         for batch_idx, data_batch in enumerate(train_loader):
             x, y = data_batch
             x = Variable(x).cuda()
@@ -233,7 +266,7 @@ if __name__ == '__main__':
             total += bsize
             correct_percent = 1.0 * correct / total
             t1 = time.time()
-            print("\r[EPOCH {0:d}] \tloss: {1:6.4f}, \tacc: {2:6.4f} \tdrop_prob:{3} \ttime:{4:2.4f}".format(epoch, train_loss / (batch_idx+1), correct_percent, drop_prob, (t1-t0)/(batch_idx+1)), end="\r")
+            if verbose: print("\r[EPOCH {0:d}] \tloss: {1:6.4f}, \tacc: {2:6.4f} \tdrop_prob:{3} \ttime:{4:2.4f}".format(epoch, train_loss / (batch_idx+1), correct_percent, drop_prob, (t1-t0)/(batch_idx+1)), end="\r")
         print("")
         writer.add_scalar("train/loss", train_loss / (batch_idx+1), epoch)
         writer.add_scalar("train/acc", correct_percent, epoch)
@@ -254,9 +287,9 @@ if __name__ == '__main__':
         correct_percent = 1.0 * correct_test / total_test
         if correct_percent > best_acc:
             best_acc = correct_percent
-        print("TEST acc: {0:6.4f},   BEST acc: {1:6.4f}".format(correct_percent, best_acc))
-        writer.add_scalar("test/acc", correct_percent)
-        writer.add_scalar("test/best_acc", best_acc)
+        if verbose: print("TEST acc: {0:6.4f},   BEST acc: {1:6.4f}".format(correct_percent, best_acc))
+        writer.add_scalar("test/acc", correct_percent, epoch)
+        writer.add_scalar("test/best_acc", best_acc, epoch)
 
     filename = os.path.join(filedir, "{}_bs{}_dp{}_epoch{}.pth".format(model_name, bsize, drop_prob, epochs))
     print("Save to {}".format(filename))

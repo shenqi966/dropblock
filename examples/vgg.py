@@ -249,10 +249,10 @@ def to_varabile(arr, requires_grad=False, is_cuda=True):
     return var
 
 class VGG2(nn.Module):
-    def __init__(self, vgg_name='VGG19', in_channel=3, out_channel=10, drop_prob=0.0, block_size=5):
+    def __init__(self, vgg_name='VGG19', in_channel=3, out_channel=10, drop_prob=0.0, block_size=5, forward='dropblock'):
         super(VGG2, self).__init__()
         # 修改了 make_layer 这个部分， 源码是在上面， 把中间分层处理
-        self.f1, self.f2, self.f3 = self._make_layers(vggcfg[vgg_name], in_channel=in_channel)
+        self.f1, self.f2, self.f3 = self._make_layers2(vggcfg[vgg_name], in_channel=in_channel)
         self.classifier = nn.Linear(512, out_channel)
         self.dropblock = LinearScheduler(
             DropBlock2D(drop_prob=drop_prob, block_size=block_size),
@@ -271,8 +271,10 @@ class VGG2(nn.Module):
         self.cr2 = RoIAlign(self.wh2, self.wh2, transform_fpcoor=True)
 
         # 注释掉 其中的一个，
-        # self.forward = self._forward_dropblock; print("-------  VGG with Dropblock  ---------\n")
-        self.forward = self._forward_align; print("-------  VGG with ROiAlign  ---------\n")
+        if forward == 'dropblock':
+            self.forward = self._forward_dropblock; print("-------  VGG with Dropblock  ---------\n")
+        else:
+            self.forward = self._forward_align; print("-------  VGG with ROiAlign  ---------\n")
 
     def _forward_dropblock(self, x):
         # out = self.features(x)
@@ -308,7 +310,7 @@ class VGG2(nn.Module):
             # print(type(x))
             rs = np.random.random(4) * param * 0.5 ; #print(param)
             rs[2], rs[3] = 1 - rs[2], 1 - rs[3]
-            rs *= self.wh2
+            rs *= 2  # attention
             bs = x.size(0)
             bbox = to_varabile(np.asarray([rs], dtype=np.float32))
             bbox = bbox.repeat(bs, 1)
@@ -326,6 +328,7 @@ class VGG2(nn.Module):
         return out1
 
     def _make_layers(self, cfg, in_channel=3):
+        print("------------  make_layers-6-11-19  ------------")
         layers = []
         in_channels = in_channel
         for x in cfg[:6]:  # 3 6 11 16 19
@@ -353,6 +356,46 @@ class VGG2(nn.Module):
 
         layers3 = []
         for x in cfg[11:]:  # 16 19
+            if x == 'M':
+                layers3 += [nn.MaxPool2d(kernel_size=2, stride=2)]
+            else:
+                layers3 += [nn.Conv2d(in_channels, x, kernel_size=3, padding=1),
+                            nn.BatchNorm2d(x),
+                            nn.ReLU(inplace=True)]
+                in_channels = x
+        layers3 += [nn.AvgPool2d(kernel_size=1, stride=1)]
+        re3 = nn.Sequential(*layers3)
+        return re, re2, re3
+
+    def _make_layers2(self, cfg, in_channel=3):
+        print("------------  make_layers-11-16-19  ------------")
+        layers = []
+        in_channels = in_channel
+        for x in cfg[:11]:  # 3 6 11 16 19
+            if x == 'M':
+                layers += [nn.MaxPool2d(kernel_size=2, stride=2)]
+            else:
+                layers += [nn.Conv2d(in_channels, x, kernel_size=3, padding=1),
+                           nn.BatchNorm2d(x),
+                           nn.ReLU(inplace=True)]
+                in_channels = x
+        layers += [nn.AvgPool2d(kernel_size=1, stride=1)]
+        re = nn.Sequential(*layers)
+
+        layers2 = []
+        for x in cfg[11:16]:  # 16 19
+            if x == 'M':
+                layers2 += [nn.MaxPool2d(kernel_size=2, stride=2)]
+            else:
+                layers2 += [nn.Conv2d(in_channels, x, kernel_size=3, padding=1),
+                            nn.BatchNorm2d(x),
+                            nn.ReLU(inplace=True)]
+                in_channels = x
+        layers2 += [nn.AvgPool2d(kernel_size=1, stride=1)]
+        re2 = nn.Sequential(*layers2)
+
+        layers3 = []
+        for x in cfg[16:]:  # 16 19
             if x == 'M':
                 layers3 += [nn.MaxPool2d(kernel_size=2, stride=2)]
             else:
