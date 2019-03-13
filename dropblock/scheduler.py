@@ -10,7 +10,8 @@ class LinearScheduler(nn.Module):
         self.drop_values = np.linspace(start=start_value, stop=stop_value, num=nr_steps)
 
     def forward(self, x):
-        return self.dropblock(x)
+        out, index = self.dropblock(x)
+        return out, index
 
     def step(self):
         if self.i < len(self.drop_values):
