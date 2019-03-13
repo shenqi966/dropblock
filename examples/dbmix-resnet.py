@@ -289,7 +289,7 @@ if __name__ == '__main__':
             outputs, index = model(x)
             yb = y[index]
             # lam = model.dropblockmix.dropblock.drop_prob # partion of blank
-            lam = 25.0/64.0
+            lam = block_size**2 / 64.0
             optimizer.zero_grad()
 
             loss1 = criterion(outputs, y)
@@ -345,7 +345,8 @@ if __name__ == '__main__':
     # Add exponent 0-0.25 => 0.8187
     # 8197 (* 0.1 ...
     # 82.41 for blocksize=3 ,*0.1,
-    # 82.70 for blocksize=3, 没有0.1
+    # 82.70 for blocksize=3, 没有0.1, 但是loss混合时加了
+    # 82.26 for ... = 3, 调整loss大小
 
 
 

@@ -209,15 +209,16 @@ class DropBlock2DMix(nn.Module):
     """
     DropBlock with mixing
     """
-    def __init__(self, drop_prob, block_size, test=False):
+    def __init__(self, drop_prob, block_size, test=False, extra_mix=False):
         super(DropBlock2DMix, self).__init__()
         print("[*] using Dropblock mix")
         print("[***]  Setting fixed drop_window")
         self.drop_prob = drop_prob
         self.block_size = block_size
         self.test = test
+        self.extra_mix = extra_mix
 
-    def forward(self, x):
+    def forward(self, x, index=None):
         # shape: (bsize, channels, height, width)
 
         assert x.dim() == 4, \
@@ -260,12 +261,20 @@ class DropBlock2DMix(nn.Module):
             # out = x * block_mask[:, None, :, :]
 
             batch_size = x.size()[0]
-            if True:
+            if index == None:
                 index = torch.randperm(batch_size).cuda()
             verse_mask = torch.ones_like(block_mask) - block_mask
             if self.test: print("--- verse_mask ---", verse_mask)
 
-            out = x * block_mask[:, None, :, :] + x[index, :] * verse_mask[:, None, :, :] #* 0.1 这里需注意，是否加0.1
+            if self.extra_mix:
+                lam = 0.05
+                out = x*block_mask[:, None, :, :]*(1-lam) + \
+                      x*verse_mask[:, None, :, :]*lam + \
+                      x[index, :]*block_mask[:, None, :, :]*(lam) + \
+                      x[index, :]*verse_mask[:, None, :, :]*(1-lam)
+            else:
+                out = x * block_mask[:, None, :, :] + \
+                      x[index, :] * verse_mask[:, None, :, :] #* 0.1 这里需注意，是否加0.1
             # if self.test: out = x * block_mask[:, None, :, :] + x[index, :] * verse_mask[:, None, :, :] * 0.1
             # scale output
             # out = out * block_mask.numel() / block_mask.sum()
