@@ -21,9 +21,12 @@ import numpy as np
 from torch.autograd import Variable
 from RoIAlign.roi_align.roi_align import RoIAlign
 import os
-import torch.nn.functional as F
+import torch.distributions as tdist
 
-results = []
+def test_noise():
+    n = tdist.Normal(torch.tensor([0.5]), torch.tensor([0.5]))
+    x = n.sample((1, 32, 32))
+    print(x)
 
 
 class ResNetCustom(ResNet):
@@ -37,12 +40,6 @@ class ResNetCustom(ResNet):
         self.relu = nn.ReLU(inplace=True)
         self.dropblock = LinearScheduler(
             DropBlock2D(drop_prob=drop_prob, block_size=block_size),
-            start_value=0.,
-            stop_value=drop_prob,
-            nr_steps=5e3
-        )
-        self.dropblockmix = LinearScheduler(
-            DropBlock2DMix(drop_prob=drop_prob, block_size=block_size),
             start_value=0.,
             stop_value=drop_prob,
             nr_steps=5e3
@@ -71,7 +68,8 @@ class ResNetCustom(ResNet):
         x = self.maxpool(x)
         # print(x.size()) # 8 8
 
-        x, index, m, vm = self.dropblockmix(self.layer1(x)) # print(x.size()) # 8 8
+        # x, index = self.dropblockmix(self.layer1(x)) # print(x.size()) # 8 8
+        x = self.layer1(x)
         x = self.layer2(x)        # print(x.size()) # 4 4
         x = self.layer3(x) # 2 2
 
@@ -82,7 +80,7 @@ class ResNetCustom(ResNet):
         x = x.view(x.shape[0], -1)
         x = self.fc(x)
 
-        return x, index, m, vm
+        return x
 
 def to_varabile(arr, requires_grad=False, is_cuda=True):
     tensor = torch.from_numpy(arr)
@@ -92,120 +90,9 @@ def to_varabile(arr, requires_grad=False, is_cuda=True):
     return var
 
 
-class ResNetAlign(ResNet):
-
-    def __init__(self, block, layers, num_classes=1000, drop_prob=0., block_size=5):
-        super(ResNet, self).__init__()
-        self.inplanes = 64
-        self.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3,
-                               bias=False)
-        self.bn1 = nn.BatchNorm2d(64)
-        self.relu = nn.ReLU(inplace=True)
-        self.dropblock = LinearScheduler(
-            DropBlock2D(drop_prob=drop_prob, block_size=block_size),
-            start_value=0.,
-            stop_value=drop_prob,
-            nr_steps=5e3
-        )
-        self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
-        self.layer1 = self._make_layer(block, 64, layers[0])
-        self.layer2 = self._make_layer(block, 128, layers[1], stride=2)
-        self.layer3 = self._make_layer(block, 256, layers[2], stride=2)
-        self.layer4 = self._make_layer(block, 512, layers[3], stride=2)
-        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
-        self.fc = nn.Linear(512 * block.expansion, num_classes)
-
-        self.wh = 4
-        self.align_sche = True
-        self.i = 0
-        # self.cr = CropAndResize(8, 8)  # 8 is according to the real size
-
-        self.cr = RoIAlign(self.wh, self.wh, transform_fpcoor=True)
-        print("--------------------------------------------------------"
-              "\n--------     RoiAlign                          -------\n"
-              "--------------------------------------------------------")
-
-        for m in self.modules():
-            if isinstance(m, nn.Conv2d):
-                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
-            elif isinstance(m, nn.BatchNorm2d):
-                nn.init.constant_(m.weight, 1)
-                nn.init.constant_(m.bias, 0)
-
-    def forward(self, x):
-        # self.dropblock.step()  # increment number of iterations
-
-        x = self.conv1(x)
-        x = self.bn1(x)
-        x = self.relu(x)
-        x = self.maxpool(x)
-        # add crop_and_resize Here
-
-        x = self.dropblock(self.layer1(x)); # print(x.size()) 8 8
-        x = self.dropblock(self.layer2(x)); # print(x.size()) 4 4
-
-        x = self.layer3(x);  # print(x.size())  # 2 2
-
-        init_param = 0.1
-        if self.align_sche:
-            vlist = np.linspace(1,2,5000)
-            if self.i < len(vlist):
-                param = vlist[self.i] * init_param
-            else:
-                param = vlist[self.i-1] * init_param
-        else: param = init_param
-
-        if self.training == True:
-            # print(type(x))
-            rs = np.random.random(4) * param
-            rs[2], rs[3] = 1 - rs[2], 1 - rs[3]
-            rs *= self.wh
-            bs = x.size(0)
-            bbox = to_varabile(np.asarray([rs], dtype=np.float32))
-            bbox = bbox.repeat(bs, 1)
-            # print(bbox)
-            box_index_data = to_varabile(np.arange(bs, dtype=np.int32))
-            x = self.cr(x, bbox, box_index_data)
-            # print("\r...                                   .... .....................................Runing Roialign", end="\r")
-        else:
-            # ss = 0
-            # rs = np.array([ss,ss,ss,ss]) * 0.05
-            # rs[2], rs[3] = 1 - rs[2], 1 - rs[3]
-            # rs *= self.wh
-            # bs = x.size(0)
-            # bbox = to_varabile(np.asarray([rs], dtype=np.float32))
-            # bbox = bbox.repeat(bs, 1)
-            # # print(bbox)
-            # box_index_data = to_varabile(np.arange(bs, dtype=np.int32))
-            # x = self.cr(x, bbox, box_index_data)
-            pass
-            # print("\r........                                     ....................................TEST No Align ", end="\r")
-
-
-        x = self.layer4(x)
-
-        x = self.avgpool(x)
-        x = x.view(x.shape[0], -1)
-        x = self.fc(x)
-
-        return x
-
 def resnet9(**kwargs):
     return ResNetCustom(BasicBlock, [1, 1, 1, 1], **kwargs)
 
-def resnet9Align(**kwargs):
-    return ResNetAlign(BasicBlock, [1, 1, 1, 1], **kwargs)
-
-
-def logger(engine, model, evaluator, loader, pbar):
-    evaluator.run(loader)
-    metrics = evaluator.state.metrics
-    avg_accuracy = metrics['accuracy']
-    pbar.log_message(
-        "Test Results - Avg accuracy: {:.2f}, drop_prob: {:.2f}".format(avg_accuracy,
-                                                                        model.dropblock.dropblock.drop_prob)
-    )
-    results.append(avg_accuracy)
 
 
 if __name__ == '__main__':
@@ -223,7 +110,7 @@ if __name__ == '__main__':
                         help='number of epochs')
     parser.add_argument('--lr', required=False, type=float, default=0.001,
                         help='learning rate')
-    parser.add_argument('--drop_prob', required=False, type=float, default=0.25,
+    parser.add_argument('--drop_prob', required=False, type=float, default=0.,
                         help='dropblock dropout probability')
     parser.add_argument('--block_size', required=False, type=int, default=3,
                         help='dropblock block size')
@@ -264,8 +151,9 @@ if __name__ == '__main__':
     test_loader = torch.utils.data.DataLoader(test_set, batch_size=bsize,
                                               shuffle=False, num_workers=workers)
 
+    # Add noise class
     classes = ('plane', 'car', 'bird', 'cat',
-               'deer', 'dog', 'frog', 'horse', 'ship', 'truck')
+               'deer', 'dog', 'frog', 'horse', 'ship', 'truck', 'noise')
 
     # define model
     model = resnet9(num_classes=len(classes), drop_prob=drop_prob, block_size=block_size)
@@ -277,9 +165,7 @@ if __name__ == '__main__':
 
     model.cuda()
     best_acc = 0
-
-    conv_num = 4
-    expandsize = conv_num*2 + 1
+    noise = tdist.Normal(torch.tensor([0.5]), torch.tensor([0.5]))
     for epoch in range(epochs):
         train_loss = 0
         correct = 0
@@ -288,25 +174,23 @@ if __name__ == '__main__':
         t0 = time.time()
         for batch_idx, data_batch in enumerate(train_loader):
             x, y = data_batch
+            noise_x = noise.sample((x.size(0), 3, 32, 32)).squeeze(-1)
+            # print(x.size(), type(x))
+            # print(noise_x.size(), type(noise_x))
+            yb = torch.LongTensor([10]*y.size(0))
+            x = 0.99*x + 0.01*noise_x
+            # print(y, yb)
+
             x = Variable(x).cuda()
             y = Variable(y).cuda()
-            outputs, index, mask, vmask = model(x)
-            yb = y[index]
-            # lam = model.dropblockmix.dropblock.drop_prob # partion of blank
-            # mask_sight = F.conv2d(mask[0,None,:,:].unsqueeze(0), torch.ones((1, 1, expandsize, expandsize)).to(mask.device), padding=(expandsize-1)).clamp(0, 1).sum().item()
-            # vmask_sight = F.conv2d(vmask[0,None,:,:].unsqueeze(0), torch.ones((1, 1, expandsize, expandsize)).to(mask.device), padding=(expandsize-1)).clamp(0, 1).sum().item()
+            yb = Variable(yb).cuda()
+            outputs = model(x)
 
-            mask_sight = F.conv2d(mask[0, None, :, :].unsqueeze(0), torch.ones((1, 1, expandsize, expandsize)).to(mask.device),padding=(expandsize - 1)).sum().item()
-            vmask_sight = F.conv2d(vmask[0, None, :, :].unsqueeze(0),torch.ones((1, 1, expandsize, expandsize)).to(mask.device),padding=(expandsize - 1)).sum().item()
-
-            lam = mask_sight / (mask_sight + vmask_sight)
-
-            # lam = block_size**2 / 64.0
             optimizer.zero_grad()
 
             loss1 = criterion(outputs, y)
             loss2 = criterion(outputs, yb)
-            loss = lam*loss1 + (1 - lam)*loss2
+            loss = 0.99*loss1 + 0.01*loss2
 
             loss.backward()
             optimizer.step()
@@ -327,7 +211,7 @@ if __name__ == '__main__':
             x, y = data_batch
             x = Variable(x).cuda()
             y = Variable(y).cuda()
-            outputs, _, _, _ = model(x)
+            outputs = model(x)
 
             _, predicted = torch.max(outputs.data, 1)
             correct_test += predicted.eq(y.data).cpu().sum().item()
@@ -359,13 +243,7 @@ if __name__ == '__main__':
     # 82.41 for blocksize=3 ,*0.1,
     # 82.70 for blocksize=3, 没有0.1, 但是loss混合时加了
     # 82.26 for ... = 3, 调整loss大小
-    # 81.80 for blocksize=7
+
+    # noise_mix 81.32 (around 80.8) for lam=0.01
 
     # Schedular is a efficient trick
-
-    # 2019 03 23  fixed the error in lambda setting and fixed the block
-    # 81.26 (80.7) block size = 7 clamp
-    # 82.91 for blocksize=3 clamp
-    # 82.65 (82.00) for blocksize=5 clamp
-
-    # 83.09 (82.60) for blocksize=3 no-clamp

@@ -4,7 +4,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 from torch.distributions import Bernoulli
-
+import numpy as np
 
 class DropBlock2D(nn.Module):
     r"""Randomly zeroes 2D spatial blocks of the input tensor.
@@ -27,12 +27,23 @@ class DropBlock2D(nn.Module):
 
     """
 
-    def __init__(self, drop_prob, block_size, test=False):
+    def __init__(self, drop_prob, block_size, test=False, gkernel=False):
         super(DropBlock2D, self).__init__()
 
         self.drop_prob = drop_prob
         self.block_size = block_size
         self.test = test
+        self.gkernel = gkernel
+        if gkernel == True:
+            print("[*] Using Gaussian-like Kernel")
+            print("[*] Gkernel size =", block_size)
+            x, y = np.meshgrid(np.linspace(-1, 1, block_size), np.linspace(-1, 1, block_size))
+            d = np.sqrt(x * x + y * y)
+            # hyper-parameter
+            sigma, mu = 0.75, 0.0
+            g = np.clip(np.exp(-((d - mu) ** 2 / (2.0 * sigma ** 2))) * 1.25, 0.0, 1.0)
+            self.g = g[np.newaxis, np.newaxis, :, :]
+
 
     def forward(self, x):
         # shape: (bsize, channels, height, width)
@@ -77,9 +88,13 @@ class DropBlock2D(nn.Module):
             return out
 
     def _compute_block_mask(self, mask):
-        block_mask = F.conv2d(mask[:, None, :, :],
-                              torch.ones((1, 1, self.block_size, self.block_size)).to(
-                                  mask.device),
+
+        if self.gkernel == True:
+            kernel = torch.from_numpy(self.g).to(mask.device)
+        else:
+            kernel = torch.ones((1, 1, self.block_size, self.block_size)).to(
+                mask.device)
+        block_mask = F.conv2d(mask[:, None, :, :],kernel,
                               padding=int(np.ceil(self.block_size // 2) + 1))
 
         delta = self.block_size // 2
@@ -226,7 +241,7 @@ class DropBlock2DMix(nn.Module):
 
         if not self.training or self.drop_prob == 0.:
             # raise ValueError("Dropblock mix, drop_prob > 0 ?")
-            return x, None
+            return x, None, None, None
         else:
             # sample from a mask
             mask_reduction = self.block_size // 2
@@ -246,7 +261,8 @@ class DropBlock2DMix(nn.Module):
             # if self.test: print("---  mask ---\n", mask)
             bs = x.shape[0]
             hw = mask_width
-            rads = torch.randint(0, hw * hw, (bs,)).long()
+            # rads = torch.randint(0, hw * hw, (bs,)).long()
+            rads = torch.randint(0, hw * hw, (1,)).long().repeat(bs) # repeat mode
             rads = torch.unsqueeze(rads, 1)
             mask = torch.zeros(bs, hw*hw).scatter_(1, rads, 1).reshape((bs,hw,hw))
 
@@ -279,7 +295,7 @@ class DropBlock2DMix(nn.Module):
             # scale output
             # out = out * block_mask.numel() / block_mask.sum()
 
-            return out, index
+            return out, index, block_mask, verse_mask
 
     def _compute_block_mask(self, mask):
         block_mask = F.conv2d(mask[:, None, :, :],
@@ -310,14 +326,134 @@ class DropBlock2DMix(nn.Module):
         mask_area = mask_sizes[-2] * mask_sizes[-1]
         return (self.drop_prob / (self.block_size ** 2)) * (feat_area / mask_area)
 
+class DropChannel(nn.Module):
+    """
+    DropBlock with mixing
+    """
+    def __init__(self, drop_prob, test=False, extra_mix=False):
+        super(DropChannel, self).__init__()
+        print("[*] using Drop Channel")
+        self.drop_prob = drop_prob
+        # self.block_size = block_size
+        self.test = test
+        self.extra_mix = extra_mix
+
+    def forward(self, x, index=None):
+        # shape: (bsize, channels, height, width)
+
+        assert x.dim() == 4, \
+            "Expected input with 4 dimensions (bsize, channels, height, width)"
+
+        if not self.training or self.drop_prob == 0.:
+            # raise ValueError("Dropblock mix, drop_prob > 0 ?")
+            # print("On Testing")
+            return x
+        else:
+            bs = x.shape[0]
+            c = x.shape[1]
+            h, w = x.shape[-1], x.shape[-2]
+            index = torch.unsqueeze(Bernoulli(1.0 - self.drop_prob).sample((bs, c,)) , 2)
+            mask = index.repeat(1,1,h*w).reshape(bs,c,h,w).to(x.device)
+
+            out = x * mask
+
+            return out
+
+
+class DropCBlock(nn.Module):
+    def __init__(self, drop_prob, block_size, test=False):
+        super(DropCBlock, self).__init__()
+        self.drop_prob = drop_prob
+        self.block_size = block_size
+        self.test = test
+        print("[*] Using Drop Cblock ``")
+
+    def forward(self, x):
+        # shape: (bsize, channels, height, width)
+
+        assert x.dim() == 4, \
+            "Expected input with 4 dimensions (bsize, channels, height, width)"
+
+        if not self.training or self.drop_prob == 0.:
+            return x
+        else:
+            # sample from a mask
+            mask_reduction = self.block_size // 2
+            mask_height = x.shape[-2] - mask_reduction
+            mask_width = x.shape[-1] - mask_reduction
+            mask_sizes = [mask_height, mask_width]
+
+            if any([x <= 0 for x in mask_sizes]):
+                raise ValueError('Input of shape {} is too small for block_size {}'
+                                 .format(tuple(x.shape), self.block_size))
+            # get gamma value
+            gamma = self._compute_gamma(x, mask_sizes)
+            # sample mask
+            mask = Bernoulli(gamma).sample((x.shape[0], *mask_sizes))
+
+            # place mask on input device
+            mask = mask.to(x.device)   # mask.cuda()
+
+            # compute block mask
+            block_mask = self._compute_block_mask(mask)
+            channel_mask = self._compute_channel_mask(x, block_mask)
+            # apply block mask
+            out = x * channel_mask
+
+            return out
+
+    def _compute_block_mask(self, mask):
+        kernel = torch.ones((1, 1, self.block_size, self.block_size)).to(
+                mask.device)
+        block_mask = F.conv2d(mask[:, None, :, :],kernel,
+                              padding=int(np.ceil(self.block_size // 2) + 1))
+
+        delta = self.block_size // 2
+        input_height = mask.shape[-2] + delta
+        input_width = mask.shape[-1] + delta
+
+        height_to_crop = block_mask.shape[-2] - input_height
+        width_to_crop = block_mask.shape[-1] - input_width
+
+        if height_to_crop != 0:
+            block_mask = block_mask[:, :, :-height_to_crop, :]
+
+        if width_to_crop != 0:
+            block_mask = block_mask[:, :, :, :-width_to_crop]
+
+        block_mask = (block_mask >= 1).to(device=block_mask.device, dtype=block_mask.dtype)
+        block_mask = 1 - block_mask.squeeze(1)
+
+        return block_mask
+
+    def _compute_gamma(self, x, mask_sizes):
+        feat_area = x.shape[-2] * x.shape[-1]
+        mask_area = mask_sizes[-2] * mask_sizes[-1]
+        return (self.drop_prob / (self.block_size ** 2)) * (feat_area / mask_area)
+
+    def _compute_channel_mask(self, x, block_mask):
+
+        bs = x.shape[0]
+        c = x.shape[1]
+        h, w = x.shape[-1], x.shape[-2]
+        index = torch.unsqueeze(Bernoulli(1.0 - self.drop_prob).sample((bs, c,)), 2)
+        mask = index.repeat(1, 1, h * w).reshape(bs, c, h, w).to(x.device)
+        mask = mask * (1 - block_mask)[:, None, :, :]
+        mask = 1 - mask
+        # print("c mask", mask)
+        # print("block mask", block_mask)
+        return mask
+
 
 if __name__ == "__main__":
-    db = DropBlock2DMix(0.4, 3, True)
+    db = DropBlock2DMix(0.2, 3, True)
+    cb = DropCBlock(0.2, 3)
     from torch.autograd import Variable
     import numpy as np
-    hw = 4
-    x = torch.Tensor(np.arange(hw*hw*2).reshape((2,1,hw,hw)))
+    hw = 6
+    x = torch.Tensor(np.arange(hw*hw*4).reshape((1,4,hw,hw)))
     x = Variable(x)
-    xx, index = db(x)
-    print(xx, xx.size())
-    print(index)
+    # xx, index = db(x)
+    xx = cb(x)
+    # print(xx, xx.size())
+    # print(index)

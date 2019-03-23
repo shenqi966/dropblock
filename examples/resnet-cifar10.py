@@ -14,7 +14,7 @@ import sys
 sys.path.append("..")
 print(sys.path)
 
-from dropblock import DropBlock2D, LinearScheduler
+from dropblock import DropBlock2D, LinearScheduler, DropChannel, DropCBlock
 from _lib.roi_align.crop_and_resize import CropAndResizeFunction, CropAndResize
 import numpy as np
 from torch.autograd import Variable
@@ -26,7 +26,7 @@ results = []
 
 class ResNetCustom(ResNet):
 
-    def __init__(self, block, layers, num_classes=1000, drop_prob=0., block_size=5):
+    def __init__(self, block, layers, num_classes=1000, drop_prob=0., block_size=5, gkernel=False):
         super(ResNet, self).__init__()
         self.inplanes = 64
         self.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3,
@@ -34,11 +34,18 @@ class ResNetCustom(ResNet):
         self.bn1 = nn.BatchNorm2d(64)
         self.relu = nn.ReLU(inplace=True)
         self.dropblock = LinearScheduler(
-            DropBlock2D(drop_prob=drop_prob, block_size=block_size),
+            DropBlock2D(drop_prob=drop_prob, block_size=block_size, gkernel=gkernel),
             start_value=0.,
             stop_value=drop_prob,
             nr_steps=5e3
         )
+        self.dropcblock = LinearScheduler(
+            DropCBlock(drop_prob=drop_prob, block_size=block_size),
+            start_value=0.,
+            stop_value=drop_prob,
+            nr_steps=5e3
+        )
+        # self.dropchannel = DropChannel(drop_prob=drop_prob)
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
         self.layer1 = self._make_layer(block, 64, layers[0])
         self.layer2 = self._make_layer(block, 128, layers[1], stride=2)
@@ -55,7 +62,7 @@ class ResNetCustom(ResNet):
                 nn.init.constant_(m.bias, 0)
 
     def forward(self, x):
-        self.dropblock.step()  # increment number of iterations
+        self.dropcblock.step()  # increment number of iterations
 
         x = self.conv1(x)
         x = self.bn1(x)
@@ -63,9 +70,10 @@ class ResNetCustom(ResNet):
         x = self.maxpool(x)
         # print(x.size()) # 8 8
 
-        x = self.dropblock(self.layer1(x))
+        x = self.dropcblock(self.layer1(x))
+        # x = self.layer1(x)
         # print(x.size()) # 8 8
-        x = self.dropblock(self.layer2(x))
+        x = self.dropcblock(self.layer2(x))
         # print(x.size()) # 4 4
         x = self.layer3(x) # 2 2
 
@@ -88,7 +96,7 @@ def to_varabile(arr, requires_grad=False, is_cuda=True):
 
 class ResNetAlign(ResNet):
 
-    def __init__(self, block, layers, num_classes=1000, drop_prob=0., block_size=5):
+    def __init__(self, block, layers, num_classes=10, drop_prob=0., block_size=5):
         super(ResNet, self).__init__()
         self.inplanes = 64
         self.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3,
@@ -217,7 +225,7 @@ if __name__ == '__main__':
                         help='number of epochs')
     parser.add_argument('--lr', required=False, type=float, default=0.001,
                         help='learning rate')
-    parser.add_argument('--drop_prob', required=False, type=float, default=0.,
+    parser.add_argument('--drop_prob', required=False, type=float, default=0.2,
                         help='dropblock dropout probability')
     parser.add_argument('--block_size', required=False, type=int, default=5,
                         help='dropblock block size')
@@ -355,5 +363,10 @@ if __name__ == '__main__':
     # 0.8060 for baseline
     # 0.8090 for drop_prob 0.1
     # 0.8127 for drop_prob 0.25
+
+    # gkernel-5 0.8061 (around 0.802)  with default schedule with 2 dropgkernel
+    # gkenrel-7 0.8103 (around 0.803)  with default schedule with 2 dropgkernel
+
+    # dropchannel 0.8016 (around 0.785) with no schedule and 1 dropchannel (train-acc 0.91)
 
     # Schedular is a efficient trick
